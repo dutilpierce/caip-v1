@@ -116,12 +116,13 @@ SELECT COUNT(*) AS ad_count FROM public.ads;
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_ROLE_KEY`
 2. Run `db/schema.sql` in Supabase SQL Editor.
-3. Restart the Replit repl so `requirements.txt` installs automatically.
-4. (Optional) Run doctor:
+3. Make sure `replit.nix` is present (it pins Python deps for Nix/PEP 668).
+4. Restart the Replit repl so Nix installs dependencies.
+5. (Optional) Run doctor:
    - `python3 db/doctor.py`
-5. Seed demo data:
+6. Seed demo data:
    - `python3 db/seed.py`
-6. Verify counts in Supabase (queries above).
+7. Verify counts in Supabase (queries above).
 
 ### Optional: SQL-only seed fallback
 
