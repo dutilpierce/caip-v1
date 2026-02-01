@@ -8,6 +8,7 @@ import os
 import json
 import hashlib
 import logging
+import ipaddress
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from functools import lru_cache
@@ -121,6 +122,58 @@ def hash_user_id(user_id: str) -> str:
     """Hash user ID with partner salt for privacy."""
     combined = f"{user_id}:{PARTNER_SALT}"
     return hashlib.sha256(combined.encode()).hexdigest()
+
+def ensure_sha256_hex(value: Optional[str], field_name: str) -> Optional[str]:
+    """Validate a 64-character lowercase SHA-256 hex string."""
+    if value is None:
+        return None
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be 64-character SHA-256 hex"
+        )
+    return value
+
+def normalize_ip(request: Optional[Request]) -> Optional[str]:
+    """
+    Normalize client IP for storage/logging.
+    - Prefer x-forwarded-for (first IP), then cf-connecting-ip, true-client-ip, request.client.host
+    - Trim whitespace
+    - Truncate to 64 chars if needed
+    - Return None if missing/invalid
+    """
+    if request is None:
+        return None
+
+    def _extract(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        first = value.split(",")[0].strip()
+        if not first:
+            return None
+        if len(first) > 64:
+            return first[:64]
+        return first
+
+    candidate = (
+        _extract(request.headers.get("x-forwarded-for"))
+        or _extract(request.headers.get("cf-connecting-ip"))
+        or _extract(request.headers.get("true-client-ip"))
+        or _extract(request.client.host if request.client else None)
+    )
+
+    if not candidate:
+        return None
+
+    if len(candidate) > 64:
+        return candidate[:64]
+
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+
+    return candidate
 
 @lru_cache(maxsize=128)
 def get_partner_config(partner_key: str) -> Optional[Dict[str, Any]]:
@@ -331,7 +384,7 @@ async def swagger_docs():
     return JSONResponse({"message": "Visit /docs for API documentation"})
 
 @app.post("/v1/chat")
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     """
     Main chat endpoint that proxies to LLM and optionally returns sponsored unit.
     
@@ -347,22 +400,23 @@ async def chat(request: ChatRequest) -> ChatResponse:
     
     try:
         # Validate partner
-        partner_config = get_partner_config(request.partner_key)
+        partner_config = get_partner_config(payload.partner_key)
         if not partner_config:
             raise HTTPException(status_code=401, detail="Invalid partner key")
         
         partner_id = partner_config.get("id")
         
         # Hash user ID for privacy
-        user_hash = hash_user_id(request.user_id or request.session_id)
+        user_hash = hash_user_id(payload.user_id or payload.session_id)
+        ensure_sha256_hex(user_hash, "user_hash")
         
         # Extract intent and generate embedding
-        intent_label = await get_intent_label(request.messages)
-        intent_text = request.messages[-1].content if request.messages else ""
+        intent_label = await get_intent_label(payload.messages)
+        intent_text = payload.messages[-1].content if payload.messages else ""
         intent_embedding = await get_embedding(intent_text)
         
         # Proxy chat to LLM
-        assistant_message = await proxy_llm_chat(request.messages)
+        assistant_message = await proxy_llm_chat(payload.messages)
         
         # Initialize decisioning engine
         engine = DecisioningEngine(partner_config)
@@ -372,7 +426,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         
         # Check if we should show sponsored content
         if not engine.check_blocked_categories(intent_label or ""):
-            if engine.check_frequency_caps(request.session_id, user_hash):
+            if engine.check_frequency_caps(payload.session_id, user_hash):
                 # Find best matching ad
                 ad = await engine.find_best_ad(intent_embedding, intent_label or "")
                 
@@ -406,13 +460,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
                     try:
                         supabase.table("events").insert({
                             "partner_id": partner_id,
-                            "session_id": request.session_id,
+                            "session_id": payload.session_id,
                             "user_hash": user_hash,
                             "event_type": "impression",
                             "ad_id": ad["id"],
                             "intent_label": intent_label,
                             "properties": {
-                                "placement_mode": request.placement_mode,
+                                "placement_mode": payload.placement_mode,
+                                "ip_address": normalize_ip(request) or "unknown",
                                 "decisioning_ms": (datetime.now() - start_time).total_seconds() * 1000
                             }
                         }).execute()
@@ -426,7 +481,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         return ChatResponse(
             assistant_message=assistant_message,
             sponsored_unit=sponsored_unit,
-            session_id=request.session_id,
+            session_id=payload.session_id,
             intent_label=intent_label
         )
     
@@ -437,35 +492,40 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/v1/events")
-async def log_event(request: EventRequest):
+async def log_event(payload: EventRequest, request: Request):
     """
     Log user events (impressions, clicks, feedback) for reporting and learning.
     """
     try:
         # Validate partner
-        partner_config = get_partner_config(request.partner_key)
+        partner_config = get_partner_config(payload.partner_key)
         if not partner_config:
             raise HTTPException(status_code=401, detail="Invalid partner key")
         
         partner_id = partner_config.get("id")
         
         # Hash user ID
-        user_hash = hash_user_id(request.user_id or request.session_id) if request.user_id else None
+        user_hash = hash_user_id(payload.user_id or payload.session_id) if payload.user_id else None
+        ensure_sha256_hex(user_hash, "user_hash")
+        base_properties = payload.properties or {}
         
         # Insert event
         supabase.table("events").insert({
             "partner_id": partner_id,
-            "session_id": request.session_id,
+            "session_id": payload.session_id,
             "user_hash": user_hash,
-            "event_type": request.event_type,
-            "ad_id": request.ad_id,
-            "intent_label": request.intent_label,
-            "properties": request.properties or {}
+            "event_type": payload.event_type,
+            "ad_id": payload.ad_id,
+            "intent_label": payload.intent_label,
+            "properties": {
+                **base_properties,
+                "ip_address": normalize_ip(request) or "unknown"
+            }
         }).execute()
         
-        logger.info(f"Event logged: {request.event_type} for session {request.session_id}")
+        logger.info(f"Event logged: {payload.event_type} for session {payload.session_id}")
         
-        return {"success": True, "event_type": request.event_type}
+        return {"success": True, "event_type": payload.event_type}
     
     except HTTPException:
         raise
@@ -474,19 +534,19 @@ async def log_event(request: EventRequest):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/v1/sponsored/ask")
-async def sponsored_ask(request: SponsoredAskRequest) -> SponsoredAskResponse:
+async def sponsored_ask(payload: SponsoredAskRequest, request: Request) -> SponsoredAskResponse:
     """
     Interactive follow-up Q&A about sponsored options.
     Answers questions about an ad using ad metadata and constrained LLM prompt.
     """
     try:
         # Validate partner
-        partner_config = get_partner_config(request.partner_key)
+        partner_config = get_partner_config(payload.partner_key)
         if not partner_config:
             raise HTTPException(status_code=401, detail="Invalid partner key")
         
         # Fetch ad details
-        ad_response = supabase.table("ads").select("*").eq("id", request.ad_id).single().execute()
+        ad_response = supabase.table("ads").select("*").eq("id", payload.ad_id).single().execute()
         if not ad_response.data:
             raise HTTPException(status_code=404, detail="Ad not found")
         
@@ -513,7 +573,7 @@ If the question cannot be answered from the available information, say so polite
                     "model": "gpt-4o-mini",
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": request.question}
+                        {"role": "user", "content": payload.question}
                     ],
                     "temperature": 0.7,
                     "max_tokens": 150
@@ -527,15 +587,18 @@ If the question cannot be answered from the available information, say so polite
         try:
             supabase.table("events").insert({
                 "partner_id": partner_config.get("id"),
-                "session_id": request.session_id,
+                "session_id": payload.session_id,
                 "event_type": "sponsored_ask",
-                "ad_id": request.ad_id,
-                "properties": {"question": request.question}
+                "ad_id": payload.ad_id,
+                "properties": {
+                    "question": payload.question,
+                    "ip_address": normalize_ip(request) or "unknown"
+                }
             }).execute()
         except Exception as e:
             logger.error(f"Error logging sponsored_ask event: {e}")
         
-        return SponsoredAskResponse(answer=answer, ad_id=request.ad_id)
+        return SponsoredAskResponse(answer=answer, ad_id=payload.ad_id)
     
     except HTTPException:
         raise

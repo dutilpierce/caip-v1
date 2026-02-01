@@ -16,6 +16,7 @@ sys.path.insert(0, '/home/ubuntu/caip-v1/server')
 from caip_backend import (
     DecisioningEngine,
     hash_user_id,
+    normalize_ip,
     Message,
     ChatRequest,
     EventRequest,
@@ -80,6 +81,33 @@ class TestUserIDHashing:
         user_hash = hash_user_id("test_user")
         assert len(user_hash) == 64
         assert all(c in "0123456789abcdef" for c in user_hash)
+
+
+class TestNormalizeIP:
+    """Test normalize_ip helper."""
+
+    def _make_request(self, headers=None, client_host=None):
+        request = Mock()
+        request.headers = headers or {}
+        request.client = Mock(host=client_host) if client_host is not None else None
+        return request
+
+    def test_forwarded_for_first_ip(self):
+        """Should keep only first IP from x-forwarded-for."""
+        request = self._make_request(headers={"x-forwarded-for": "1.1.1.1, 2.2.2.2"})
+        assert normalize_ip(request) == "1.1.1.1"
+
+    def test_truncates_long_strings(self):
+        """Should truncate long strings to 64 chars."""
+        long_value = "9" * 80
+        request = self._make_request(headers={"x-forwarded-for": long_value})
+        normalized = normalize_ip(request)
+        assert normalized == ("9" * 64)
+
+    def test_returns_none_for_empty(self):
+        """Should return None for empty/invalid values."""
+        request = self._make_request(headers={"x-forwarded-for": "   "})
+        assert normalize_ip(request) is None
 
 
 class TestDecisioningEngine:

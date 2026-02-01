@@ -1,6 +1,6 @@
 """
-CAIP v1 Seed Data Script
-Populates 20 safe-category example ads with embeddings for demo.
+CAIP v1 Seed Data Script (primary seeder)
+Seeds demo partner, policy profile, and ads using public schema only.
 """
 
 import os
@@ -16,13 +16,21 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-PARTNER_SALT = os.getenv("PARTNER_SALT", "default-salt-change-me")
-
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     print("Error: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+DEMO_PARTNER_NAME = "Demo Partner"
+DEMO_PARTNER_KEY = "demo_key"
+DEFAULT_POLICY_PROFILE = {
+    "blocked_categories": ["gambling", "weapons", "adult"],
+    "requires_explicit_intent_categories": ["finance", "health"],
+    "max_sponsored_per_session": 3,
+    "min_turns_between_sponsored": 2,
+    "disclosure_mode": "sponsored_suggestion",
+}
 
 # Example ads data
 EXAMPLE_ADS = [
@@ -173,6 +181,53 @@ async def get_embedding(text: str) -> Optional[List[float]]:
     if not OPENAI_API_KEY:
         print("Warning: OpenAI API key not set, skipping embeddings")
         return None
+
+def sha256_hex(value: str) -> str:
+    """Return a 64-character SHA-256 hex digest."""
+    return hashlib.sha256(value.encode()).hexdigest()
+
+def ensure_sha256_hex(value: str, field_name: str) -> str:
+    """Validate a 64-character lowercase SHA-256 hex string."""
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise ValueError(f"{field_name} must be 64-character SHA-256 hex")
+    return value
+
+def get_demo_partner_hash() -> str:
+    return ensure_sha256_hex(sha256_hex(DEMO_PARTNER_KEY), "api_key_hash")
+
+def get_or_create_partner() -> str:
+    partner_hash = get_demo_partner_hash()
+    response = supabase.table("partners").select("id").eq(
+        "api_key_hash", partner_hash
+    ).limit(1).execute()
+
+    if response.data:
+        return response.data[0]["id"]
+
+    partner_response = supabase.table("partners").insert({
+        "name": DEMO_PARTNER_NAME,
+        "api_key_hash": partner_hash,
+    }).execute()
+    return partner_response.data[0]["id"]
+
+def get_or_create_policy_profile(partner_id: str) -> str:
+    response = supabase.table("policy_profiles").select("id").eq(
+        "partner_id", partner_id
+    ).limit(1).execute()
+
+    if response.data:
+        return response.data[0]["id"]
+
+    profile_response = supabase.table("policy_profiles").insert({
+        "partner_id": partner_id,
+        **DEFAULT_POLICY_PROFILE,
+    }).execute()
+    return profile_response.data[0]["id"]
+
+def set_partner_default_policy(partner_id: str, policy_profile_id: str) -> None:
+    supabase.table("partners").update({
+        "default_policy_profile_id": policy_profile_id
+    }).eq("id", partner_id).execute()
     
     try:
         async with httpx.AsyncClient() as client:
@@ -194,35 +249,28 @@ async def get_embedding(text: str) -> Optional[List[float]]:
         return None
 
 async def seed_ads():
-    """Seed the database with example ads."""
+    """Seed the database with demo partner, policy profile, and ads."""
     try:
-        # Get or create demo partner
-        print("Fetching demo partner...")
-        partners_response = supabase.table("partners").select("id").eq(
-            "api_key_hash", hashlib.sha256(b"demo_key").hexdigest()
-        ).execute()
-        
-        if not partners_response.data:
-            print("Creating demo partner...")
-            partner_response = supabase.table("partners").insert({
-                "name": "Demo Partner",
-                "api_key_hash": hashlib.sha256(b"demo_key").hexdigest()
-            }).execute()
-            partner_id = partner_response.data[0]["id"]
-        else:
-            partner_id = partners_response.data[0]["id"]
-        
+        print("Seeding demo partner...")
+        partner_id = get_or_create_partner()
         print(f"Using partner ID: {partner_id}")
-        
-        # Check if ads already exist
-        existing_ads = supabase.table("ads").select("id").eq("partner_id", partner_id).execute()
-        if existing_ads.data and len(existing_ads.data) >= 20:
-            print(f"Database already has {len(existing_ads.data)} ads, skipping seed")
-            return
-        
+
+        print("Seeding policy profile...")
+        policy_profile_id = get_or_create_policy_profile(partner_id)
+        set_partner_default_policy(partner_id, policy_profile_id)
+
+        existing_ads = supabase.table("ads").select("id,title").eq(
+            "partner_id", partner_id
+        ).execute()
+        existing_titles = {row["title"] for row in (existing_ads.data or [])}
+
         print(f"Seeding {len(EXAMPLE_ADS)} example ads...")
-        
+
         for i, ad in enumerate(EXAMPLE_ADS):
+            if ad["title"] in existing_titles:
+                print(f"↷ Skipping existing ad: {ad['title']}")
+                continue
+
             # Generate embedding for ad description
             embedding = await get_embedding(ad["description"])
             
@@ -252,7 +300,7 @@ async def seed_ads():
             except Exception as e:
                 print(f"✗ Error seeding ad {i+1}: {e}")
         
-        print(f"\n✓ Successfully seeded {len(EXAMPLE_ADS)} example ads!")
+        print(f"\n✓ Seed run complete.")
         
     except Exception as e:
         print(f"Error during seeding: {e}")

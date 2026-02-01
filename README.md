@@ -55,7 +55,7 @@ CAIP v1 is a production-ready platform that enables seamless monetization of con
 3. Enable pgvector extension:
    - Go to SQL Editor
    - Run: `CREATE EXTENSION IF NOT EXISTS vector;`
-4. Run the schema migration:
+4. Run the schema migration (public schema only):
    - Copy contents of `db/schema.sql`
    - Paste into SQL Editor and execute
 
@@ -77,7 +77,7 @@ OPENAI_API_KEY=your_openai_api_key
 # Install dependencies
 pip install -r requirements.txt
 
-# Seed example ads
+# Seed demo data (primary path)
 python db/seed.py
 
 # Run FastAPI server
@@ -100,6 +100,33 @@ npm run dev
 ```
 
 Visit http://localhost:3000/demo to see the chat interface
+
+### 5. Verification (SQL)
+
+Run these in Supabase SQL Editor:
+
+```sql
+SELECT COUNT(*) AS partner_count FROM public.partners;
+SELECT COUNT(*) AS ad_count FROM public.ads;
+```
+
+### Replit (Nix/PEP 668) Quick Start
+
+1. Add secrets in Replit:
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+2. Run `db/schema.sql` in Supabase SQL Editor.
+3. Restart the Replit repl so `requirements.txt` installs automatically.
+4. (Optional) Run doctor:
+   - `python3 db/doctor.py`
+5. Seed demo data:
+   - `python3 db/seed.py`
+6. Verify counts in Supabase (queries above).
+
+### Optional: SQL-only seed fallback
+
+If you prefer SQL seeding, run `db/seed.sql` after `db/schema.sql`.
+Note: `api_key_hash` and `user_hash` must always be SHA-256 hex (64 chars).
 
 ## API Endpoints
 
@@ -189,7 +216,7 @@ Interactive Q&A about a sponsored option.
 ### partners
 - `id` (UUID): Primary key
 - `name` (VARCHAR): Partner name
-- `api_key_hash` (VARCHAR): Hashed API key for authentication
+- `api_key_hash` (VARCHAR): SHA-256 hex (64 chars) of partner key
 - `default_policy_profile_id` (UUID): Default policy profile
 
 ### policy_profiles
@@ -225,7 +252,7 @@ Interactive Q&A about a sponsored option.
 - `id` (UUID): Primary key
 - `partner_id` (UUID): Foreign key to partners
 - `session_id` (VARCHAR): Session identifier
-- `user_hash` (VARCHAR): SHA256 hashed user ID
+- `user_hash` (VARCHAR): SHA-256 hex (64 chars) of user ID
 - `event_type` (VARCHAR): Type of event
 - `ad_id` (UUID): Foreign key to ads
 - `intent_label` (VARCHAR): Extracted intent label
