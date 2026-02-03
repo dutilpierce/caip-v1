@@ -1,10 +1,20 @@
 { pkgs }: {
   deps = [
-    pkgs.python311
-    pkgs.python311Packages.httpx
-    pkgs.python311Packages.supabase
-    pkgs.python311Packages.gotrue
-    pkgs.python311Packages.python-dotenv
+    pkgs.python3
+    pkgs.python3Packages.httpx
+    pkgs.python3Packages.supabase
+    pkgs.python3Packages.gotrue
+    pkgs.python3Packages.python-dotenv
+    pkgs.nodejs_18
+  ];
+}
+{ pkgs }: {
+  deps = [
+    pkgs.python3
+    pkgs.python3Packages.httpx
+    pkgs.python3Packages.supabase
+    pkgs.python3Packages.gotrue
+    pkgs.python3Packages.python-dotenv
     pkgs.nodejs_18
   ];
 }

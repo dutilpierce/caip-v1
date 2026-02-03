@@ -1,16 +1,17 @@
 """
 CAIP v1 Seed Data Script (primary seeder)
 Seeds demo partner, policy profile, and ads using public schema only.
+Uses Supabase REST endpoints to avoid client dependency issues in Replit.
 """
 
 import os
 import sys
-import asyncio
+import json
 import hashlib
-from typing import Optional, List
-
-import httpx
-from supabase import create_client, Client
+from typing import Optional, List, Dict, Any
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 # Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -20,7 +21,7 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     print("Error: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
     sys.exit(1)
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+SUPABASE_REST_BASE = f"{SUPABASE_URL.rstrip('/')}/rest/v1"
 
 DEMO_PARTNER_NAME = "Demo Partner"
 DEMO_PARTNER_KEY = "demo_key"
@@ -32,7 +33,6 @@ DEFAULT_POLICY_PROFILE = {
     "disclosure_mode": "sponsored_suggestion",
 }
 
-# Example ads data
 EXAMPLE_ADS = [
     {
         "title": "Notion - All-in-one workspace",
@@ -176,34 +176,9 @@ EXAMPLE_ADS = [
     },
 ]
 
-async def get_embedding(text: str) -> Optional[List[float]]:
-    """Generate embedding using OpenAI API."""
-    if not OPENAI_API_KEY:
-        print("Warning: OpenAI API key not set, skipping embeddings")
-        return None
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.openai.com/v1/embeddings",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={
-                    "model": "text-embedding-3-small",
-                    "input": text,
-                    "encoding_format": "float",
-                },
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["data"][0]["embedding"]
-    except Exception as e:
-        print(f"Error generating embedding: {e}")
-        return None
-
 def sha256_hex(value: str) -> str:
     """Return a 64-character SHA-256 hex digest."""
-    return hashlib.sha256(value.encode()).hexdigest()
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 def ensure_sha256_hex(value: str, field_name: str) -> str:
     """Validate a 64-character lowercase SHA-256 hex string."""
@@ -214,42 +189,157 @@ def ensure_sha256_hex(value: str, field_name: str) -> str:
 def get_demo_partner_hash() -> str:
     return ensure_sha256_hex(sha256_hex(DEMO_PARTNER_KEY), "api_key_hash")
 
+def _request_json(
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    body: Optional[Dict[str, Any]] = None,
+) -> Any:
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+    request = Request(url, data=data, method=method, headers=headers)
+    try:
+        with urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            if not raw:
+                return None
+            return json.loads(raw)
+    except HTTPError as e:
+        raw = e.read().decode("utf-8") if e.fp else ""
+        raise RuntimeError(f"HTTP {e.code} {e.reason}: {raw}") from e
+    except URLError as e:
+        raise RuntimeError(f"Network error: {e.reason}") from e
+
+def _supabase_headers(prefer: Optional[str] = None) -> Dict[str, str]:
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    return headers
+
+def supabase_request(
+    method: str,
+    path: str,
+    params: Optional[Dict[str, str]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    prefer: Optional[str] = None,
+) -> Any:
+    query = f"?{urlencode(params)}" if params else ""
+    url = f"{SUPABASE_REST_BASE}/{path}{query}"
+    return _request_json(method, url, _supabase_headers(prefer=prefer), body=body)
+
+def get_embedding(text: str) -> Optional[List[float]]:
+    if not OPENAI_API_KEY:
+        print("Warning: OpenAI API key not set, skipping embeddings")
+        return None
+
+    body = {
+        "model": "text-embedding-3-small",
+        "input": text,
+        "encoding_format": "float",
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        data = _request_json("POST", "https://api.openai.com/v1/embeddings", headers, body)
+        return data["data"][0]["embedding"]
+    except Exception as e:
+        print(f"Error generating embedding: {e}")
+        return None
+
 def get_or_create_partner() -> str:
     partner_hash = get_demo_partner_hash()
-    response = supabase.table("partners").select("id").eq(
-        "api_key_hash", partner_hash
-    ).limit(1).execute()
+    response = supabase_request(
+        "GET",
+        "partners",
+        params={"select": "id", "api_key_hash": f"eq.{partner_hash}", "limit": "1"},
+    )
+    if response:
+        return response[0]["id"]
 
-    if response.data:
-        return response.data[0]["id"]
+    created = supabase_request(
+        "POST",
+        "partners",
+        params={"on_conflict": "api_key_hash"},
+        body={"name": DEMO_PARTNER_NAME, "api_key_hash": partner_hash},
+        prefer="resolution=merge-duplicates,return=representation",
+    )
+    if created:
+        return created[0]["id"]
 
-    partner_response = supabase.table("partners").insert({
-        "name": DEMO_PARTNER_NAME,
-        "api_key_hash": partner_hash,
-    }).execute()
-    return partner_response.data[0]["id"]
+    response = supabase_request(
+        "GET",
+        "partners",
+        params={"select": "id", "api_key_hash": f"eq.{partner_hash}", "limit": "1"},
+    )
+    if response:
+        return response[0]["id"]
+    raise RuntimeError("Failed to create or fetch Demo Partner")
 
 def get_or_create_policy_profile(partner_id: str) -> str:
-    response = supabase.table("policy_profiles").select("id").eq(
-        "partner_id", partner_id
-    ).limit(1).execute()
+    response = supabase_request(
+        "GET",
+        "policy_profiles",
+        params={"select": "id", "partner_id": f"eq.{partner_id}", "limit": "1"},
+    )
+    if response:
+        return response[0]["id"]
 
-    if response.data:
-        return response.data[0]["id"]
-
-    profile_response = supabase.table("policy_profiles").insert({
-        "partner_id": partner_id,
-        **DEFAULT_POLICY_PROFILE,
-    }).execute()
-    return profile_response.data[0]["id"]
+    created = supabase_request(
+        "POST",
+        "policy_profiles",
+        body={"partner_id": partner_id, **DEFAULT_POLICY_PROFILE},
+        prefer="return=representation",
+    )
+    if created:
+        return created[0]["id"]
+    raise RuntimeError("Failed to create policy profile")
 
 def set_partner_default_policy(partner_id: str, policy_profile_id: str) -> None:
-    supabase.table("partners").update({
-        "default_policy_profile_id": policy_profile_id
-    }).eq("id", partner_id).execute()
+    supabase_request(
+        "PATCH",
+        "partners",
+        params={"id": f"eq.{partner_id}"},
+        body={"default_policy_profile_id": policy_profile_id},
+        prefer="return=representation",
+    )
 
-async def seed_ads():
-    """Seed the database with demo partner, policy profile, and ads."""
+def get_existing_ad_titles(partner_id: str) -> set:
+    response = supabase_request(
+        "GET",
+        "ads",
+        params={"select": "title", "partner_id": f"eq.{partner_id}"},
+    )
+    return {row["title"] for row in (response or [])}
+
+def insert_ad(partner_id: str, ad: Dict[str, str], embedding: Optional[List[float]]) -> None:
+    ad_data = {
+        "partner_id": partner_id,
+        "title": ad["title"],
+        "description": ad["description"],
+        "landing_url": ad["landing_url"],
+        "category": ad["category"],
+        "brand": ad["brand"],
+        "payout_model": "cpm",
+        "bid_cents": 500,
+        "metadata": {
+            "features": [],
+            "tags": [ad["category"], ad["brand"].lower()],
+        },
+        "active": True,
+    }
+    if embedding:
+        ad_data["embedding"] = embedding
+    supabase_request("POST", "ads", body=ad_data, prefer="return=representation")
+
+def seed_ads() -> None:
     try:
         print("Seeding demo partner...")
         partner_id = get_or_create_partner()
@@ -259,11 +349,7 @@ async def seed_ads():
         policy_profile_id = get_or_create_policy_profile(partner_id)
         set_partner_default_policy(partner_id, policy_profile_id)
 
-        existing_ads = supabase.table("ads").select("id,title").eq(
-            "partner_id", partner_id
-        ).execute()
-        existing_titles = {row["title"] for row in (existing_ads.data or [])}
-
+        existing_titles = get_existing_ad_titles(partner_id)
         print(f"Seeding {len(EXAMPLE_ADS)} example ads...")
 
         for i, ad in enumerate(EXAMPLE_ADS):
@@ -271,29 +357,9 @@ async def seed_ads():
                 print(f"↷ Skipping existing ad: {ad['title']}")
                 continue
 
-            embedding = await get_embedding(ad["description"])
-
-            ad_data = {
-                "partner_id": partner_id,
-                "title": ad["title"],
-                "description": ad["description"],
-                "landing_url": ad["landing_url"],
-                "category": ad["category"],
-                "brand": ad["brand"],
-                "payout_model": "cpm",
-                "bid_cents": 500,
-                "metadata": {
-                    "features": [],
-                    "tags": [ad["category"], ad["brand"].lower()],
-                },
-                "active": True,
-            }
-
-            if embedding:
-                ad_data["embedding"] = embedding
-
+            embedding = get_embedding(ad["description"])
             try:
-                supabase.table("ads").insert(ad_data).execute()
+                insert_ad(partner_id, ad, embedding)
                 print(f"✓ Seeded ad {i+1}/{len(EXAMPLE_ADS)}: {ad['title']}")
             except Exception as e:
                 print(f"✗ Error seeding ad {i+1}: {e}")
@@ -304,4 +370,4 @@ async def seed_ads():
         sys.exit(1)
 
 if __name__ == "__main__":
-    asyncio.run(seed_ads())
+    seed_ads()
