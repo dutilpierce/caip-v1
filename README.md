@@ -121,9 +121,9 @@ SELECT COUNT(*) AS ad_count FROM public.ads;
    - `rm -rf .pythonlibs`
 5. Restart the Replit repl so Nix installs dependencies.
 6. (Optional) Run doctor:
-   - `python3 db/doctor.py`
+   - `python db/doctor.py`
 7. Seed demo data (uses Supabase REST, no client dependency needed):
-   - `python3 db/seed.py`
+   - `python db/seed.py`
 8. Verify counts in Supabase (queries above).
 
 ### Optional: SQL-only seed fallback

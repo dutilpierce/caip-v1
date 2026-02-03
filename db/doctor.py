@@ -37,7 +37,7 @@ def main() -> int:
         return 1
 
     print("\nEnv vars present.")
-    print("Next action: run `python3 db/seed.py`.")
+    print("Next action: run `python db/seed.py`.")
     return 0
 
 if __name__ == "__main__":
