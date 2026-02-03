@@ -125,6 +125,8 @@ SELECT COUNT(*) AS ad_count FROM public.ads;
 7. Seed demo data (uses Supabase REST, no client dependency needed):
    - `python db/seed.py`
 8. Verify counts in Supabase (queries above).
+9. Run backend:
+   - `python -m uvicorn server.caip_backend:app --host 0.0.0.0 --port 8000`
 
 ### Optional: SQL-only seed fallback
 

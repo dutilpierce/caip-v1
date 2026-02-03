@@ -19,7 +19,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import httpx
-from supabase import create_client, Client
 
 # ============================================================================
 # CONFIGURATION & SETUP
@@ -36,8 +35,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise ValueError("Missing required environment variables: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY")
 
-# Initialize Supabase client
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+SUPABASE_REST_BASE = f"{SUPABASE_URL.rstrip('/')}/rest/v1"
 
 # Configure logging
 logging.basicConfig(
@@ -175,16 +173,60 @@ def normalize_ip(request: Optional[Request]) -> Optional[str]:
 
     return candidate
 
+def _supabase_headers(prefer: Optional[str] = None) -> Dict[str, str]:
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+    return headers
+
+def supabase_request(
+    method: str,
+    path: str,
+    params: Optional[Dict[str, str]] = None,
+    body: Optional[Dict[str, Any]] = None,
+    prefer: Optional[str] = None,
+) -> Any:
+    url = f"{SUPABASE_REST_BASE}/{path}"
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.request(
+                method,
+                url,
+                headers=_supabase_headers(prefer=prefer),
+                params=params,
+                json=body,
+            )
+            response.raise_for_status()
+            if not response.text:
+                return None
+            return response.json()
+    except httpx.HTTPError as exc:
+        logger.error(f"Supabase REST error ({method} {path}): {exc}")
+        raise
+
+def supabase_rpc(function_name: str, body: Optional[Dict[str, Any]] = None) -> Any:
+    return supabase_request("POST", f"rpc/{function_name}", body=body)
+
 @lru_cache(maxsize=128)
 def get_partner_config(partner_key: str) -> Optional[Dict[str, Any]]:
     """Get partner configuration and policy profile from Supabase."""
     try:
-        response = supabase.table("partners").select(
-            "*, policy_profiles(*)"
-        ).eq("api_key_hash", hashlib.sha256(partner_key.encode()).hexdigest()).single().execute()
-        
-        if response.data:
-            return response.data
+        response = supabase_request(
+            "GET",
+            "partners",
+            params={
+                "select": "*,policy_profiles(*)",
+                "api_key_hash": f"eq.{hashlib.sha256(partner_key.encode()).hexdigest()}",
+                "limit": "1",
+            },
+        )
+        if response:
+            return response[0]
         return None
     except Exception as e:
         logger.error(f"Error fetching partner config: {e}")
@@ -306,25 +348,36 @@ class DecisioningEngine:
             min_turns = self.policy.get("min_turns_between_sponsored", 2)
             
             # Count impressions in current session
-            impressions = supabase.table("events").select("id").eq(
-                "session_id", session_id
-            ).eq("event_type", "impression").execute()
+            impressions = supabase_request(
+                "GET",
+                "events",
+                params={
+                    "select": "id",
+                    "session_id": f"eq.{session_id}",
+                    "event_type": "eq.impression",
+                },
+            ) or []
             
-            if len(impressions.data) >= max_per_session:
+            if len(impressions) >= max_per_session:
                 logger.info(f"Frequency cap reached for session {session_id}")
                 return False
             
             # Check min turns between sponsored
-            recent_events = supabase.table("events").select("id").eq(
-                "session_id", session_id
-            ).order("created_at", desc=True).limit(min_turns).execute()
+            recent_events = supabase_request(
+                "GET",
+                "events",
+                params={
+                    "select": "event_type",
+                    "session_id": f"eq.{session_id}",
+                    "order": "created_at.desc",
+                    "limit": str(min_turns),
+                },
+            ) or []
             
-            if len(recent_events.data) > 0:
-                # Check if any recent event is an impression
-                for event in recent_events.data:
-                    if event.get("event_type") == "impression":
-                        logger.info(f"Min turns between sponsored not met for session {session_id}")
-                        return False
+            for event in recent_events:
+                if event.get("event_type") == "impression":
+                    logger.info(f"Min turns between sponsored not met for session {session_id}")
+                    return False
             
             return True
         except Exception as e:
@@ -339,18 +392,19 @@ class DecisioningEngine:
         
         try:
             # Use pgvector cosine similarity search
-            response = supabase.rpc(
+            response = await asyncio.to_thread(
+                supabase_rpc,
                 "match_ads",
                 {
                     "query_embedding": intent_embedding,
                     "match_count": 5,
-                    "similarity_threshold": 0.5
-                }
-            ).execute()
+                    "similarity_threshold": 0.5,
+                },
+            )
             
-            if response.data and len(response.data) > 0:
+            if response and len(response) > 0:
                 # Filter by active status and category
-                for ad in response.data:
+                for ad in response:
                     if ad.get("active") and not self.check_blocked_categories(ad.get("category", "")):
                         return ad
             
@@ -434,11 +488,17 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
                     # Get coupon if available
                     coupon = None
                     try:
-                        coupon_response = supabase.table("coupons").select("code").eq(
-                            "ad_id", ad["id"]
-                        ).limit(1).execute()
-                        if coupon_response.data:
-                            coupon = coupon_response.data[0].get("code")
+                        coupon_response = supabase_request(
+                            "GET",
+                            "coupons",
+                            params={
+                                "select": "code",
+                                "ad_id": f"eq.{ad['id']}",
+                                "limit": "1",
+                            },
+                        )
+                        if coupon_response:
+                            coupon = coupon_response[0].get("code")
                     except Exception as e:
                         logger.error(f"Error fetching coupon: {e}")
                     
@@ -458,7 +518,7 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
                     
                     # Log impression event
                     try:
-                        supabase.table("events").insert({
+                        supabase_request("POST", "events", body={
                             "partner_id": partner_id,
                             "session_id": payload.session_id,
                             "user_hash": user_hash,
@@ -470,7 +530,7 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
                                 "ip_address": normalize_ip(request) or "unknown",
                                 "decisioning_ms": (datetime.now() - start_time).total_seconds() * 1000
                             }
-                        }).execute()
+                        })
                     except Exception as e:
                         logger.error(f"Error logging impression: {e}")
         
@@ -510,7 +570,7 @@ async def log_event(payload: EventRequest, request: Request):
         base_properties = payload.properties or {}
         
         # Insert event
-        supabase.table("events").insert({
+        supabase_request("POST", "events", body={
             "partner_id": partner_id,
             "session_id": payload.session_id,
             "user_hash": user_hash,
@@ -521,7 +581,7 @@ async def log_event(payload: EventRequest, request: Request):
                 **base_properties,
                 "ip_address": normalize_ip(request) or "unknown"
             }
-        }).execute()
+        })
         
         logger.info(f"Event logged: {payload.event_type} for session {payload.session_id}")
         
@@ -546,11 +606,15 @@ async def sponsored_ask(payload: SponsoredAskRequest, request: Request) -> Spons
             raise HTTPException(status_code=401, detail="Invalid partner key")
         
         # Fetch ad details
-        ad_response = supabase.table("ads").select("*").eq("id", payload.ad_id).single().execute()
-        if not ad_response.data:
+        ad_response = supabase_request(
+            "GET",
+            "ads",
+            params={"select": "*", "id": f"eq.{payload.ad_id}", "limit": "1"},
+        )
+        if not ad_response:
             raise HTTPException(status_code=404, detail="Ad not found")
         
-        ad = ad_response.data
+        ad = ad_response[0]
         
         # Build constrained prompt for LLM
         system_prompt = f"""You are a helpful assistant answering questions about a product/service.
@@ -585,7 +649,7 @@ If the question cannot be answered from the available information, say so polite
         
         # Log interaction event
         try:
-            supabase.table("events").insert({
+            supabase_request("POST", "events", body={
                 "partner_id": partner_config.get("id"),
                 "session_id": payload.session_id,
                 "event_type": "sponsored_ask",
@@ -594,7 +658,7 @@ If the question cannot be answered from the available information, say so polite
                     "question": payload.question,
                     "ip_address": normalize_ip(request) or "unknown"
                 }
-            }).execute()
+            })
         except Exception as e:
             logger.error(f"Error logging sponsored_ask event: {e}")
         

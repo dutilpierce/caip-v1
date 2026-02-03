@@ -17,12 +17,12 @@ def main() -> int:
     print("-----------")
 
     httpx_version = safe_import_version("httpx")
-    supabase_version = safe_import_version("supabase")
-    gotrue_version = safe_import_version("gotrue")
+    fastapi_version = safe_import_version("fastapi")
+    uvicorn_version = safe_import_version("uvicorn")
 
     print(f"httpx: {httpx_version or 'not installed'}")
-    print(f"supabase: {supabase_version or 'not installed'}")
-    print(f"gotrue: {gotrue_version or 'not installed'}")
+    print(f"fastapi: {fastapi_version or 'not installed'}")
+    print(f"uvicorn: {uvicorn_version or 'not installed'}")
 
     missing_env = []
     for key in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"):

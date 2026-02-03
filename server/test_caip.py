@@ -167,46 +167,39 @@ class TestFrequencyCaps:
         """Set up test fixtures."""
         self.engine = DecisioningEngine(MOCK_PARTNER_CONFIG)
     
-    @patch('caip_backend.supabase')
-    def test_max_sponsored_per_session_cap(self, mock_supabase):
+    @patch('caip_backend.supabase_request')
+    def test_max_sponsored_per_session_cap(self, mock_supabase_request):
         """Should respect max sponsored per session."""
         # Mock: already 3 impressions in session
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
+        mock_supabase_request.return_value = [
             {"id": "event-1"},
             {"id": "event-2"},
-            {"id": "event-3"}
+            {"id": "event-3"},
         ]
         
         result = self.engine.check_frequency_caps("session-123", "user-hash")
         assert result is False
     
-    @patch('caip_backend.supabase')
-    def test_min_turns_between_sponsored(self, mock_supabase):
+    @patch('caip_backend.supabase_request')
+    def test_min_turns_between_sponsored(self, mock_supabase_request):
         """Should respect minimum turns between sponsored."""
-        # Mock: recent events include impression within min turns
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-            {"id": "event-1"}
-        ]
-        
-        # First call for impression count
-        mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = []
-        
-        # Second call for recent events
-        mock_supabase.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [
-            {"event_type": "impression"}
+        # First call for impression count, second call for recent events
+        mock_supabase_request.side_effect = [
+            [],
+            [{"event_type": "impression"}],
         ]
         
         # This is a simplified test; full implementation would need more mocking
         # Result depends on mock setup
     
-    @patch('caip_backend.supabase')
-    def test_frequency_cap_check_passes(self, mock_supabase):
+    @patch('caip_backend.supabase_request')
+    def test_frequency_cap_check_passes(self, mock_supabase_request):
         """Should allow sponsored when caps not reached."""
-        # Mock: no impressions yet
-        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
-        
-        # Mock: no recent events
-        mock_supabase.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
+        # Mock: no impressions yet, no recent events
+        mock_supabase_request.side_effect = [
+            [],
+            [],
+        ]
         
         result = self.engine.check_frequency_caps("session-123", "user-hash")
         assert result is True
