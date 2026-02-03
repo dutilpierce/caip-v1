@@ -116,7 +116,7 @@ SELECT COUNT(*) AS ad_count FROM public.ads;
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_ROLE_KEY`
 2. Run `db/schema.sql` in Supabase SQL Editor.
-3. Make sure `replit.nix` is present (it pins Python deps for Nix/PEP 668).
+3. Make sure `replit.nix` is present (it pins the Python runtime for Nix/PEP 668).
 4. If you previously ran pip installs, delete the local site-packages:
    - `rm -rf .pythonlibs`
 5. Restart the Replit repl so Nix installs dependencies.
