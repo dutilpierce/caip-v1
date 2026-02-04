@@ -6,5 +6,6 @@
     pkgs.python3Packages.fastapi
     pkgs.python3Packages.pydantic
     pkgs.python3Packages.httpx
+    pkgs.nodejs
   ];
 }
