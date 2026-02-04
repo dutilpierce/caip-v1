@@ -26,6 +26,8 @@ curl -fsSL "${URL}" -o "${INSTALL_DIR}/${TARBALL}"
 echo "Extracting..."
 tar -xJf "${INSTALL_DIR}/${TARBALL}" -C "${INSTALL_DIR}"
 
+echo "Installing..."
+rm -rf "${INSTALL_DIR}/bin" "${INSTALL_DIR}/include" "${INSTALL_DIR}/lib" "${INSTALL_DIR}/share"
 mv "${INSTALL_DIR}/node-v${NODE_VERSION}-${PLATFORM}-${ARCH}"/* "${INSTALL_DIR}/"
 rm -rf "${INSTALL_DIR}/node-v${NODE_VERSION}-${PLATFORM}-${ARCH}" "${INSTALL_DIR}/${TARBALL}"
 
