@@ -127,10 +127,10 @@ SELECT COUNT(*) AS ad_count FROM public.ads;
 8. Verify counts in Supabase (queries above).
 9. Run backend:
    - `python -m uvicorn server.caip_backend:app --host 0.0.0.0 --port 8000`
-10. Frontend (if Nix provides Node < 18):
+10. Frontend (if Nix provides Node < 20.19):
    - `bash scripts/install-node.sh`
    - `export PATH="$PWD/.node/bin:$PATH"`
-   - `node -v` (expect 20.x)
+   - `node -v` (expect 20.19.x)
    - `npm install`
    - `npm run dev`
 

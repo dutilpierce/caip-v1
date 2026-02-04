@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NODE_VERSION="${NODE_VERSION:-20.11.1}"
+NODE_VERSION="${NODE_VERSION:-20.19.0}"
 PLATFORM="linux"
 
 ARCH="$(uname -m)"
