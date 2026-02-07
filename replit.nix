@@ -7,5 +7,6 @@
     pkgs.python3Packages.pydantic
     pkgs.python3Packages.httpx
     pkgs.nodejs-16_x
+    pkgs.nodePackages.pnpm
   ];
 }
