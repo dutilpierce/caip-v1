@@ -1,4 +1,4 @@
-run = "npm run dev:caip"
+run = "bash scripts/run-demo.sh"
 
 [env]
 PORT = "3000"
