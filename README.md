@@ -41,6 +41,15 @@ CAIP v1 is a production-ready platform that enables seamless monetization of con
 
 ## Quick Start
 
+### How to Run the Demo
+
+1. Set up Supabase and env vars (see below).
+2. Seed the database: `python db/seed.py`
+3. Run: `npm run dev:caip`
+4. Open **http://localhost:3000/demo** in your browser.
+
+The URL must point to port **3000** (the Node frontend). The Python backend runs on 8000 and is proxied automatically. Do not open port 8000 directly—that shows API docs, not the demo UI.
+
 ### Prerequisites
 
 - Python 3.8+
@@ -89,17 +98,29 @@ The API will be available at `http://localhost:8000`
 - **Swagger Docs**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/health
 
-### 4. Frontend Setup
+### 4. Frontend + CAIP Demo Setup
 
+The demo needs both the Node server (React UI) and the Python backend (CAIP API). Use one of these approaches:
+
+**Option A: Single command (recommended)** – runs both together:
 ```bash
-# Install dependencies
 npm install
+npm run dev:caip
+```
 
-# Run development server
+**Option B: Two terminals** – for development/debugging:
+```bash
+# Terminal 1: Python CAIP backend (port 8000)
+python -m uvicorn server.caip_backend:app --host 0.0.0.0 --port 8000
+
+# Terminal 2: Node frontend (port 3000)
+npm install
 npm run dev
 ```
 
-Visit http://localhost:3000/demo to see the chat interface
+**Important:** The frontend proxies `/v1/*` requests to the Python backend. If the backend is not running, chat requests will fail with "CAIP backend unavailable".
+
+Visit **http://localhost:3000/demo** to see the chat interface.
 
 ### 5. Verification (SQL)
 
@@ -125,14 +146,14 @@ SELECT COUNT(*) AS ad_count FROM public.ads;
 7. Seed demo data (uses Supabase REST, no client dependency needed):
    - `python db/seed.py`
 8. Verify counts in Supabase (queries above).
-9. Run backend:
-   - `python -m uvicorn server.caip_backend:app --host 0.0.0.0 --port 8000`
-10. Frontend (if Nix provides Node < 20.19):
+9. Frontend (if Nix provides Node < 20.19):
    - `bash scripts/install-node.sh`
    - `export PATH="$PWD/.node/bin:$PATH"`
    - `node -v` (expect 20.19.x)
+10. Run the demo (starts both frontend and Python backend):
    - `npm install`
-   - `npm run dev`
+   - `npm run dev:caip`
+11. **Open the Replit webview URL** – it points to port 3000. Go to **/demo** to see the chat interface.
 
 ### Optional: SQL-only seed fallback
 

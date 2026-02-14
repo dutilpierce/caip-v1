@@ -2,11 +2,15 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
+import { createProxyMiddleware } from "http-proxy-middleware";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+
+// CAIP backend: proxy /v1/* to Python FastAPI (port 8000)
+const CAIP_BACKEND_URL = process.env.CAIP_BACKEND_URL || "http://127.0.0.1:8000";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -35,6 +39,21 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
+  // CAIP: proxy /v1/* to Python FastAPI backend
+  app.use(
+    "/v1",
+    createProxyMiddleware({
+      target: CAIP_BACKEND_URL,
+      changeOrigin: true,
+      onError: (err, req, res) => {
+        console.error("[CAIP proxy error]", err.message);
+        (res as import("express").Response).status(502).json({
+          error: "CAIP backend unavailable",
+          detail: "Start the Python backend with: python -m uvicorn server.caip_backend:app --host 0.0.0.0 --port 8000",
+        });
+      },
+    })
+  );
   // tRPC API
   app.use(
     "/api/trpc",
