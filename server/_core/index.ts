@@ -40,11 +40,13 @@ async function startServer() {
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
   // CAIP: proxy /v1/* to Python FastAPI backend
+  // Express strips mount path, so req.url becomes /chat for /v1/chat - restore /v1 prefix
   app.use(
     "/v1",
     createProxyMiddleware({
       target: CAIP_BACKEND_URL,
       changeOrigin: true,
+      pathRewrite: { "^/(.*)": "/v1/$1" },
       onError: (err, req, res) => {
         console.error("[CAIP proxy error]", err.message);
         (res as import("express").Response).status(502).json({
