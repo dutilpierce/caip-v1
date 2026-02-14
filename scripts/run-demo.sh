@@ -31,6 +31,22 @@ fi
 python -m uvicorn server.caip_backend:app --host 0.0.0.0 --port 8000 &
 UVICORN_PID=$!
 
+# Print URL instructions (Replit Preview uses the domain automatically)
+echo ""
+echo "=========================================="
+echo "  CAIP Demo is running!"
+echo "=========================================="
+echo ""
+echo "  To open the demo:"
+echo "  1. Click the 'Preview' tab (left side of Replit)"
+echo "  2. In the address bar at the top, type:  /demo"
+echo "  3. Press Enter"
+echo ""
+echo "  If you see 'Not Found', click the port/domain dropdown"
+echo "  and select port 3000 (Node), then try /demo again."
+echo ""
+echo "=========================================="
+
 # Keep script running; forward Ctrl+C to both
 trap "kill $NODE_PID $UVICORN_PID 2>/dev/null; exit 0" INT TERM
 wait
